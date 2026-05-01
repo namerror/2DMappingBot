@@ -1,8 +1,17 @@
 #include <SSD1306Wire.h>
+#include <Arduino.h>
+
 SSD1306Wire lcd(0x3c, SDA, SCL);
 
 #define TRIG 5
 #define ECHO 16
+#define STBY A10
+#define PWMA A17
+#define PWMB A5
+#define AIN1 A13 // A for left motor, B for right motor
+#define AIN2 A14
+#define BIN1 A15
+#define BIN2 A16
 
 void setup() {
   //Serial.begin(9600);  // ← ADD THIS: start USB communication to laptop
@@ -14,6 +23,20 @@ void setup() {
   lcd.init();
   lcd.flipScreenVertically();
   lcd.setFont(ArialMT_Plain_16);
+
+  // control settings
+  pinMode(STBY, OUTPUT);
+  pinMode(PWMA, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  digitalWrite(STBY, HIGH); // Standby off
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, LOW); // Stop motors
 }
 
 float readDistance() {
@@ -42,6 +65,37 @@ float getAverage() {
   }
   return sum / K;
 }
+
+void moveForward() {
+  // CW for both motors
+  digitalWrite(AIN1, HIGH);
+  digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, HIGH);
+  digitalWrite(BIN2, LOW);
+}
+
+void moveBackward() {
+  // CCW for both motors
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, HIGH);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, HIGH);
+}
+
+void stopMotors() {
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, LOW);
+}
+
+void shortBrake() {
+  digitalWrite(AIN1, HIGH);
+  digitalWrite(AIN2, HIGH);
+  digitalWrite(BIN1, HIGH);
+  digitalWrite(BIN2, HIGH);
+}
+
 
 void loop() {
   float dist = readDistance();
