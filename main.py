@@ -1,11 +1,11 @@
 import pygame
-import serial
+import socket
 import sys
 import math
 
 # --- CONFIGURATION ---
-SERIAL_PORT = 'COM7'      # 🔁 CHANGE THIS to your port
-BAUD_RATE = 115200
+HOST = '0.0.0.0'  # Listen on all interfaces
+PORT = 8080      
 
 WINDOW_WIDTH = 1000
 WINDOW_HEIGHT = 800
@@ -40,14 +40,20 @@ clock = pygame.time.Clock()
 font = pygame.font.Font(None, 24)
 small_font = pygame.font.Font(None, 18)
 
-# --- Connect to Maker board ---
+# --- Setup WiFi Socket (non-blocking) ---
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server_socket.setblocking(False)  # Non-blocking mode
 try:
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    print(f"✅ Connected to Maker board on {SERIAL_PORT}")
-except serial.SerialException:
-    print(f"❌ ERROR: Could not open {SERIAL_PORT}")
-    print("   Make sure Serial Monitor is closed and port is correct")
+    server_socket.bind((HOST, PORT))
+    server_socket.listen(1)
+    print(f"✅ Listening for Makerboard connection on {HOST}:{PORT}")
+except socket.error as e:
+    print(f"❌ ERROR: Could not set up WiFi connection: {e}")
     sys.exit()
+
+conn = None  # Will be set when Arduino connects
+recv_buffer = ''
 
 # --- Helper Functions ---
 def get_sensor_endpoint(robot_x, robot_y, angle, distance_cm):
@@ -160,17 +166,30 @@ print("   ESC : Quit")
 print("")
 
 while True:
+    # --- Try to accept incoming connection from Arduino ---
+    if conn is None:
+        try:
+            conn, addr = server_socket.accept()
+            print(f"✅ Connected to Makerboard at {addr}")
+            conn.setblocking(False)  # Non-blocking mode
+        except BlockingIOError:
+            pass  # No connection yet, continue
+    
     # --- Handle keyboard input ---
     keys = pygame.key.get_pressed()
     
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            ser.close()
+            if conn:
+                conn.close()
+            server_socket.close()
             pygame.quit()
             sys.exit()
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
-                ser.close()
+                if conn:
+                    conn.close()
+                server_socket.close()
                 pygame.quit()
                 sys.exit()
             elif event.key == pygame.K_c:
@@ -216,12 +235,26 @@ while True:
     ROBOT_Y = max(ROBOT_RADIUS, min(WINDOW_HEIGHT - ROBOT_RADIUS, ROBOT_Y))
     
     # --- Read distance sensor ---
-    if ser.in_waiting > 0:
+    if conn:
         try:
-            line = ser.readline().decode('utf-8').strip()
-            if line:
-                current_distance = float(line)
-        except ValueError:
+            data_bytes = conn.recv(1024)
+            if not data_bytes:
+                print("⚠️ Makerboard disconnected")
+                conn.close()
+                conn = None
+                recv_buffer = ''
+            else:
+                recv_buffer += data_bytes.decode('utf-8', errors='ignore')
+                while '\n' in recv_buffer:
+                    line, recv_buffer = recv_buffer.split('\n', 1)
+                    if line.strip():
+                        try:
+                            current_distance = float(line.strip())
+                        except ValueError:
+                            pass
+        except BlockingIOError:
+            pass  # No data available
+        except socket.error:
             pass
     
     # --- Auto-scan (FIXED: no attribute error now) ---
@@ -268,6 +301,7 @@ while True:
     info_lines = [
         f"Distance: {current_distance:.1f} cm",
         f"Robot: ({int(ROBOT_X)}, {int(ROBOT_Y)}) @ {int(ROBOT_ANGLE)}°",
+        f"Conn: {'YES' if conn else 'NO'}",
         f"Walls: {len(detected_walls)}",
         f"Auto-scan: {'ON' if auto_scan_mode else 'OFF'}",
         "",
