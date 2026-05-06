@@ -88,7 +88,7 @@ void setup() {
   ledcSetup(PWM_CHANNEL_B, PWM_FREQUENCY, PWM_RESOLUTION);
   ledcAttachPin(PWMA, PWM_CHANNEL_A);
   ledcAttachPin(PWMB, PWM_CHANNEL_B);
-  setMotorSpeed(50);
+  setMotorSpeed(30);
 }
 
 float readDistance() {
@@ -352,6 +352,7 @@ void controlLoop() {
 
   readSerialCommands();
   updateActionCommand(currentMillis);
+
 }
 
 void loop() {
