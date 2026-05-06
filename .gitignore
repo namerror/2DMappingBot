@@ -42,3 +42,4 @@ fp-info-cache
 .vscode/
 .pio/
 .venv/
+__pycache__/

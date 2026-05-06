@@ -1,0 +1,119 @@
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+CONFIG_PATH = Path(__file__).with_name("control_config.yaml")
+
+
+@dataclass(frozen=True)
+class SerialConfig:
+    port: str = "COM7"
+    baud_rate: int = 115200
+    timeout_seconds: float = 0.05
+
+
+@dataclass(frozen=True)
+class ControlConfig:
+    command_interval_ms: int = 75
+    command_duration_ms: int = 150
+    default_pwm_percent: int = 50
+    brake_duration_ms: int = 150
+
+
+@dataclass(frozen=True)
+class CommandEstimateConfig:
+    wheel_diameter_cm: float = 6.5
+    track_width_cm: float = 12.0
+    motor_rpm_at_100_pwm: float = 180.0
+    pwm_to_speed_scale: float = 1.0
+
+
+@dataclass(frozen=True)
+class ImuEstimateConfig:
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
+class PoseConfig:
+    mode: str = "command_estimate"
+    command_estimate: CommandEstimateConfig = CommandEstimateConfig()
+    imu_estimate: ImuEstimateConfig = ImuEstimateConfig()
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    serial: SerialConfig = SerialConfig()
+    control: ControlConfig = ControlConfig()
+    pose: PoseConfig = PoseConfig()
+
+
+def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
+    value = data.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def load_config(path: Path = CONFIG_PATH) -> AppConfig:
+    if not path.exists():
+        return AppConfig()
+
+    with path.open("r", encoding="utf-8") as config_file:
+        raw = yaml.safe_load(config_file) or {}
+
+    if not isinstance(raw, dict):
+        return AppConfig()
+
+    serial = _section(raw, "serial")
+    control = _section(raw, "control")
+    pose = _section(raw, "pose")
+    command_estimate = _section(pose, "command_estimate")
+    imu_estimate = _section(pose, "imu_estimate")
+
+    return AppConfig(
+        serial=SerialConfig(
+            port=str(serial.get("port", SerialConfig.port)),
+            baud_rate=int(serial.get("baud_rate", SerialConfig.baud_rate)),
+            timeout_seconds=float(serial.get("timeout_seconds", SerialConfig.timeout_seconds)),
+        ),
+        control=ControlConfig(
+            command_interval_ms=int(
+                control.get("command_interval_ms", ControlConfig.command_interval_ms)
+            ),
+            command_duration_ms=int(
+                control.get("command_duration_ms", ControlConfig.command_duration_ms)
+            ),
+            default_pwm_percent=int(
+                control.get("default_pwm_percent", ControlConfig.default_pwm_percent)
+            ),
+            brake_duration_ms=int(control.get("brake_duration_ms", ControlConfig.brake_duration_ms)),
+        ),
+        pose=PoseConfig(
+            mode=str(pose.get("mode", PoseConfig.mode)),
+            command_estimate=CommandEstimateConfig(
+                wheel_diameter_cm=float(
+                    command_estimate.get(
+                        "wheel_diameter_cm", CommandEstimateConfig.wheel_diameter_cm
+                    )
+                ),
+                track_width_cm=float(
+                    command_estimate.get("track_width_cm", CommandEstimateConfig.track_width_cm)
+                ),
+                motor_rpm_at_100_pwm=float(
+                    command_estimate.get(
+                        "motor_rpm_at_100_pwm",
+                        CommandEstimateConfig.motor_rpm_at_100_pwm,
+                    )
+                ),
+                pwm_to_speed_scale=float(
+                    command_estimate.get(
+                        "pwm_to_speed_scale", CommandEstimateConfig.pwm_to_speed_scale
+                    )
+                ),
+            ),
+            imu_estimate=ImuEstimateConfig(
+                enabled=bool(imu_estimate.get("enabled", ImuEstimateConfig.enabled))
+            ),
+        ),
+    )
