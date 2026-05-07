@@ -27,8 +27,12 @@ const unsigned long IMU_INTERVAL_MS = 20;
 const unsigned long CONTROL_INTERVAL_MS = 10;
 const unsigned long DEFAULT_ACTION_DURATION_MS = 250;
 const unsigned long MAX_ACTION_DURATION_MS = 10000;
+const unsigned long CALIBRATION_DURATION_MS = 5000;
+const unsigned long CALIBRATION_SAMPLE_INTERVAL_MS = 20;
 const float ACCEL_SCALE = 16384.0f;
 const float GYRO_SCALE = 131.0f;
+const float ACCEL_AXIS_STABILITY_THRESHOLD_G = 0.05f;
+const float ACCEL_MAG_STABILITY_THRESHOLD_G = 0.06f;
 
 int dutyCycle = 0; // 0-100% duty cycle for motor speed control
 unsigned long lastDistanceMillis = 0;
@@ -36,7 +40,10 @@ unsigned long lastImuMillis = 0;
 unsigned long lastImuSampleMillis = 0;
 unsigned long lastControlMillis = 0;
 float imuYawDeg = 0.0f;
+float gyroZBias = 0.0f;
 bool imuConnected = false;
+bool imuCalibrated = false;
+bool calibrationRunning = false;
 
 enum ActionCommand {
   ACTION_NONE,
@@ -66,6 +73,12 @@ void stopActionCommand();
 void sendActionCommand(ActionCommand command, unsigned long durationMs);
 void updateActionCommand(unsigned long currentMillis);
 unsigned long parseDuration(String text);
+float maxFloat(float a, float b);
+void discardSerialInput();
+void sendCalibrationStart();
+void sendCalibrationOk(float gzBias, unsigned int sampleCount, float accelAxisRange, float accelMagnitudeRange);
+void sendCalibrationFailed(const char* reason, unsigned int sampleCount);
+void calibrateImu();
 void processSerialCommand(String commandLine);
 void readSerialCommands();
 void imuLoop();
@@ -222,6 +235,11 @@ void stopActionCommand() {
 }
 
 void sendActionCommand(ActionCommand command, unsigned long durationMs) {
+  if(calibrationRunning || !imuCalibrated) {
+    stopActionCommand();
+    return;
+  }
+
   if(command == ACTION_NONE || durationMs == 0) {
     stopActionCommand();
     return;
@@ -266,6 +284,153 @@ unsigned long parseDuration(String text) {
   return durationMs;
 }
 
+float maxFloat(float a, float b) {
+  return a > b ? a : b;
+}
+
+void discardSerialInput() {
+  while(Serial.available() > 0) {
+    Serial.read();
+  }
+  serialCommandBuffer = "";
+}
+
+void sendCalibrationStart() {
+  Serial.print(millis());
+  Serial.println(",status,calibration,start");
+}
+
+void sendCalibrationOk(float gzBias, unsigned int sampleCount, float accelAxisRange, float accelMagnitudeRange) {
+  Serial.print(millis());
+  Serial.print(",status,calibration,ok,gz_bias,");
+  Serial.print(gzBias, 4);
+  Serial.print(",samples,");
+  Serial.print(sampleCount);
+  Serial.print(",accel_axis_range,");
+  Serial.print(accelAxisRange, 4);
+  Serial.print(",accel_mag_range,");
+  Serial.println(accelMagnitudeRange, 4);
+}
+
+void sendCalibrationFailed(const char* reason, unsigned int sampleCount) {
+  Serial.print(millis());
+  Serial.print(",status,calibration,failed,");
+  Serial.print(reason);
+  Serial.print(",samples,");
+  Serial.println(sampleCount);
+}
+
+void calibrateImu() {
+  stopActionCommand();
+  calibrationRunning = true;
+  imuCalibrated = false;
+  gyroZBias = 0.0f;
+  imuYawDeg = 0.0f;
+  sendCalibrationStart();
+
+  lcd.clear();
+  lcd.drawString(0, 0, "Calibrating");
+  lcd.drawString(0, 18, "Keep robot still");
+  lcd.display();
+
+  if(!imuConnected) {
+    calibrationRunning = false;
+    discardSerialInput();
+    sendCalibrationFailed("no_imu", 0);
+    return;
+  }
+
+  bool firstSample = true;
+  float minAx = 0.0f;
+  float maxAx = 0.0f;
+  float minAy = 0.0f;
+  float maxAy = 0.0f;
+  float minAz = 0.0f;
+  float maxAz = 0.0f;
+  float minAccelMagnitude = 0.0f;
+  float maxAccelMagnitude = 0.0f;
+  double gzSum = 0.0;
+  unsigned int sampleCount = 0;
+  unsigned long startMillis = millis();
+  unsigned long lastSampleMillis = 0;
+
+  while(millis() - startMillis < CALIBRATION_DURATION_MS) {
+    stopMotors();
+
+    unsigned long currentMillis = millis();
+    if(currentMillis - lastSampleMillis >= CALIBRATION_SAMPLE_INTERVAL_MS) {
+      lastSampleMillis = currentMillis;
+
+      int16_t rawAx = 0;
+      int16_t rawAy = 0;
+      int16_t rawAz = 0;
+      int16_t rawGx = 0;
+      int16_t rawGy = 0;
+      int16_t rawGz = 0;
+      imu.getMotion6(&rawAx, &rawAy, &rawAz, &rawGx, &rawGy, &rawGz);
+
+      float ax = rawAx / ACCEL_SCALE;
+      float ay = rawAy / ACCEL_SCALE;
+      float az = rawAz / ACCEL_SCALE;
+      float accelMagnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
+      float gz = rawGz / GYRO_SCALE;
+
+      if(firstSample) {
+        minAx = maxAx = ax;
+        minAy = maxAy = ay;
+        minAz = maxAz = az;
+        minAccelMagnitude = maxAccelMagnitude = accelMagnitude;
+        firstSample = false;
+      } else {
+        if(ax < minAx) minAx = ax;
+        if(ax > maxAx) maxAx = ax;
+        if(ay < minAy) minAy = ay;
+        if(ay > maxAy) maxAy = ay;
+        if(az < minAz) minAz = az;
+        if(az > maxAz) maxAz = az;
+        if(accelMagnitude < minAccelMagnitude) minAccelMagnitude = accelMagnitude;
+        if(accelMagnitude > maxAccelMagnitude) maxAccelMagnitude = accelMagnitude;
+      }
+
+      gzSum += gz;
+      sampleCount++;
+    }
+
+    delay(1);
+  }
+
+  if(sampleCount == 0) {
+    calibrationRunning = false;
+    discardSerialInput();
+    sendCalibrationFailed("no_samples", sampleCount);
+    return;
+  }
+
+  float accelAxisRange = maxFloat(maxAx - minAx, maxFloat(maxAy - minAy, maxAz - minAz));
+  float accelMagnitudeRange = maxAccelMagnitude - minAccelMagnitude;
+  if(accelAxisRange > ACCEL_AXIS_STABILITY_THRESHOLD_G ||
+      accelMagnitudeRange > ACCEL_MAG_STABILITY_THRESHOLD_G) {
+    calibrationRunning = false;
+    discardSerialInput();
+    sendCalibrationFailed("unstable", sampleCount);
+    return;
+  }
+
+  gyroZBias = gzSum / sampleCount;
+  imuYawDeg = 0.0f;
+  imuCalibrated = true;
+  lastImuSampleMillis = millis();
+  lastImuMillis = lastImuSampleMillis;
+  calibrationRunning = false;
+  discardSerialInput();
+  sendCalibrationOk(gyroZBias, sampleCount, accelAxisRange, accelMagnitudeRange);
+
+  lcd.clear();
+  lcd.drawString(0, 0, "Calibrated");
+  lcd.drawString(0, 18, "Yaw reset");
+  lcd.display();
+}
+
 void processSerialCommand(String commandLine) {
   commandLine.trim();
   if(commandLine.length() == 0) {
@@ -276,6 +441,9 @@ void processSerialCommand(String commandLine) {
   String argument = commandLine.substring(1);
 
   switch(command) {
+    case 'C':
+      calibrateImu();
+      break;
     case 'F':
       sendActionCommand(ACTION_FORWARD, parseDuration(argument));
       break;
@@ -347,7 +515,7 @@ void imuLoop() {
   float az = rawAz / ACCEL_SCALE;
   float gx = rawGx / GYRO_SCALE;
   float gy = rawGy / GYRO_SCALE;
-  float gz = rawGz / GYRO_SCALE;
+  float gz = (rawGz / GYRO_SCALE) - gyroZBias;
 
   float dtSeconds = (currentMillis - lastImuSampleMillis) / 1000.0f;
   lastImuSampleMillis = currentMillis;

@@ -6,7 +6,7 @@ import pygame
 
 from pose_estimator import PoseEstimator
 from robot_config import CONFIG_PATH, load_config
-from robot_serial import RobotConnectionError, RobotController
+from robot_serial import RobotCalibrationError, RobotConnectionError, RobotController
 
 
 WINDOW_WIDTH = 1800
@@ -344,6 +344,17 @@ def print_startup(config_path: str, port: str, pose_status: str) -> None:
     print("")
 
 
+def print_calibration_summary(controller: RobotController) -> None:
+    print("Calibrating IMU: keep the robot still for 5 seconds...")
+    status = controller.calibrate_imu()
+    if status.gz_bias is None:
+        print("IMU calibration complete.")
+        return
+
+    samples = f", samples={status.samples}" if status.samples is not None else ""
+    print(f"IMU calibration complete: gz_bias={status.gz_bias:.4f} deg/s{samples}")
+
+
 def main() -> int:
     config = load_config()
     start_x = MAP_WIDTH // 2
@@ -359,6 +370,16 @@ def main() -> int:
         print(f"Details: {exc}")
         return 1
 
+    try:
+        print_calibration_summary(controller)
+    except RobotCalibrationError as exc:
+        print("ERROR: IMU calibration failed.")
+        print("Leave the robot still, then restart the control app to try again.")
+        print(f"Details: {exc}")
+        controller.close()
+        return 1
+
+    pose_estimator.reset(start_x, start_y, 0.0)
     controller.set_speed(pwm_percent)
     print_startup(str(CONFIG_PATH), config.serial.port, pose_estimator.status)
 

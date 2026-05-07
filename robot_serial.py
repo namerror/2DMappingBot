@@ -1,6 +1,6 @@
 import csv
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import serial
 
@@ -28,13 +28,30 @@ class ImuTelemetry:
 
 
 @dataclass
+class CalibrationStatus:
+    timestamp_ms: int
+    state: str
+    reason: str | None = None
+    gz_bias: float | None = None
+    samples: int | None = None
+    accel_axis_range: float | None = None
+    accel_mag_range: float | None = None
+    raw_values: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RobotTelemetry:
     distance_cm: float = 100.0
     last_raw_line: str = ""
     last_imu: ImuTelemetry | None = None
+    last_calibration: CalibrationStatus | None = None
 
 
 class RobotConnectionError(Exception):
+    pass
+
+
+class RobotCalibrationError(Exception):
     pass
 
 
@@ -94,6 +111,36 @@ class RobotController:
             self._last_sent_command = command
             self._last_send_time = now
 
+    def calibrate_imu(
+        self,
+        timeout_seconds: float = 10.0,
+        settle_seconds: float = 1.0,
+    ) -> CalibrationStatus:
+        self.telemetry.last_calibration = None
+        self.stop()
+        settle_deadline = time.monotonic() + settle_seconds
+        while time.monotonic() < settle_deadline:
+            self.poll_telemetry()
+            time.sleep(0.05)
+        self._write("C")
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            self.poll_telemetry()
+            status = self.telemetry.last_calibration
+            if status is None:
+                time.sleep(0.02)
+                continue
+            if status.state == "ok":
+                self._last_sent_command = ""
+                return status
+            if status.state == "failed":
+                reason = status.reason or "calibration failed"
+                raise RobotCalibrationError(reason)
+            time.sleep(0.02)
+
+        raise RobotCalibrationError("timed out waiting for calibration result")
+
     def read_distance(self) -> float:
         self.poll_telemetry()
         return self.telemetry.distance_cm
@@ -127,6 +174,8 @@ class RobotController:
             self._handle_distance_record(timestamp_ms, values)
         elif data_type == "imu":
             self._handle_imu_record(timestamp_ms, values)
+        elif data_type == "status":
+            self._handle_status_record(timestamp_ms, values)
 
     def _handle_distance_record(self, timestamp_ms: int, values: list[str]) -> None:
         del timestamp_ms
@@ -157,6 +206,51 @@ class RobotController:
             gz=gz,
             yaw=yaw,
         )
+
+    def _handle_status_record(self, timestamp_ms: int, values: list[str]) -> None:
+        if len(values) < 2 or values[0].lower() != "calibration":
+            return
+
+        state = values[1].lower()
+        extras = values[2:]
+        reason = None
+        if state == "failed" and extras:
+            reason = extras[0].lower()
+            extras = extras[1:]
+
+        details = self._parse_key_value_fields(extras)
+        self.telemetry.last_calibration = CalibrationStatus(
+            timestamp_ms=timestamp_ms,
+            state=state,
+            reason=reason,
+            gz_bias=self._optional_float(details.get("gz_bias")),
+            samples=self._optional_int(details.get("samples")),
+            accel_axis_range=self._optional_float(details.get("accel_axis_range")),
+            accel_mag_range=self._optional_float(details.get("accel_mag_range")),
+            raw_values=values,
+        )
+
+    def _parse_key_value_fields(self, values: list[str]) -> dict[str, str]:
+        details: dict[str, str] = {}
+        for index in range(0, len(values) - 1, 2):
+            details[values[index].lower()] = values[index + 1]
+        return details
+
+    def _optional_float(self, value: str | None) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
+
+    def _optional_int(self, value: str | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
 
     def _write(self, command: str) -> None:
         self._serial.write(f"{command}\n".encode("utf-8"))
