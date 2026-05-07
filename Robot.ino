@@ -118,7 +118,7 @@ void setup() {
   ledcSetup(PWM_CHANNEL_B, PWM_FREQUENCY, PWM_RESOLUTION);
   ledcAttachPin(PWMA, PWM_CHANNEL_A);
   ledcAttachPin(PWMB, PWM_CHANNEL_B);
-  setMotorSpeed(30);
+  setMotorSpeed(80);
 
   imu.initialize();
   imuConnected = imu.testConnection();

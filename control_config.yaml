@@ -18,7 +18,7 @@ pose:
   command_estimate:
     wheel_diameter_cm: 6.5
     track_width_cm: 12.0
-    motor_rpm_at_100_pwm: 180.0
+    motor_rpm_at_100_pwm: 120.0
     pwm_to_speed_scale: 1.0
   imu_estimate:
     enabled: false
