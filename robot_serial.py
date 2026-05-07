@@ -44,6 +44,7 @@ class RobotTelemetry:
     distance_cm: float = 100.0
     last_raw_line: str = ""
     last_imu: ImuTelemetry | None = None
+    last_imu_status: str | None = None
     last_calibration: CalibrationStatus | None = None
 
 
@@ -110,6 +111,13 @@ class RobotController:
             self._write(command)
             self._last_sent_command = command
             self._last_send_time = now
+
+    def set_imu_required(self, required: bool, settle_seconds: float = 1.0) -> None:
+        settle_deadline = time.monotonic() + settle_seconds
+        while time.monotonic() < settle_deadline:
+            self.poll_telemetry()
+            time.sleep(0.05)
+        self._write("I1" if required else "I0")
 
     def calibrate_imu(
         self,
@@ -208,7 +216,14 @@ class RobotController:
         )
 
     def _handle_status_record(self, timestamp_ms: int, values: list[str]) -> None:
-        if len(values) < 2 or values[0].lower() != "calibration":
+        if len(values) < 2:
+            return
+
+        status_type = values[0].lower()
+        if status_type == "imu":
+            self.telemetry.last_imu_status = values[1].lower()
+            return
+        if status_type != "calibration":
             return
 
         state = values[1].lower()

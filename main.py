@@ -253,6 +253,7 @@ def draw_panel(
     wall_count: int,
     auto_scan: bool,
     pose_status: str,
+    imu_required: bool,
     pwm_percent: int,
     port: str,
     hit: tuple[float | None, float | None],
@@ -278,6 +279,10 @@ def draw_panel(
     draw_text(surface, fonts["small"], f"Auto-scan: {'ON' if auto_scan else 'OFF'}", x, y)
     y += 22
     draw_text(surface, fonts["small"], f"PWM: {pwm_percent}%", x, y)
+    y += 22
+    imu_text = "IMU: required" if imu_required else "IMU: off"
+    imu_color = MUTED_TEXT_COLOR if imu_required else WARNING_COLOR
+    draw_text(surface, fonts["small"], imu_text, x, y, imu_color)
     y += 22
     status_color = WARNING_COLOR if "not implemented" in pose_status else MUTED_TEXT_COLOR
     draw_text(surface, fonts["small"], pose_status, x, y, status_color)
@@ -332,11 +337,18 @@ def scan_wall(
         print(f"No valid wall detected. Distance: {current_distance:.1f} cm")
 
 
-def print_startup(config_path: str, port: str, pose_status: str, sensor_angle_offset_deg: float) -> None:
+def print_startup(
+    config_path: str,
+    port: str,
+    pose_status: str,
+    sensor_angle_offset_deg: float,
+    imu_required: bool,
+) -> None:
     print("2D Mapping Bot control panel")
     print(f"Config: {config_path}")
     print(f"Serial port: {port}")
     print(f"Pose mode: {pose_status}")
+    print(f"IMU required: {'yes' if imu_required else 'no (distance-only)'}")
     print(f"Sensor angle offset: {sensor_angle_offset_deg:.1f} deg (+left, -right)")
     print("")
     print("Controls:")
@@ -364,6 +376,7 @@ def print_calibration_summary(controller: RobotController) -> None:
 
 def main() -> int:
     config = load_config()
+    imu_required = config.pose.imu_estimate.enabled
     start_x = MAP_WIDTH // 2
     start_y = WINDOW_HEIGHT // 2
     pose_estimator = PoseEstimator(config.pose, start_x, start_y, DISTANCE_SCALE)
@@ -377,14 +390,18 @@ def main() -> int:
         print(f"Details: {exc}")
         return 1
 
-    try:
-        print_calibration_summary(controller)
-    except RobotCalibrationError as exc:
-        print("ERROR: IMU calibration failed.")
-        print("Leave the robot still, then restart the control app to try again.")
-        print(f"Details: {exc}")
-        controller.close()
-        return 1
+    controller.set_imu_required(imu_required)
+    if imu_required:
+        try:
+            print_calibration_summary(controller)
+        except RobotCalibrationError as exc:
+            print("ERROR: IMU calibration failed.")
+            print("Leave the robot still, then restart the control app to try again.")
+            print(f"Details: {exc}")
+            controller.close()
+            return 1
+    else:
+        print("IMU calibration skipped: imu_estimate.enabled=false; using distance-only mode.")
 
     pose_estimator.reset(start_x, start_y, 0.0)
     controller.set_speed(pwm_percent)
@@ -393,6 +410,7 @@ def main() -> int:
         config.serial.port,
         pose_estimator.status,
         config.sensor.angle_offset_deg,
+        imu_required,
     )
 
     pygame.init()
@@ -546,6 +564,7 @@ def main() -> int:
                 len(detected_walls),
                 auto_scan_mode,
                 pose_estimator.status,
+                imu_required,
                 pwm_percent,
                 controller.port,
                 hit,

@@ -43,6 +43,7 @@ float imuYawDeg = 0.0f;
 float gyroZBias = 0.0f;
 bool imuConnected = false;
 bool imuCalibrated = false;
+bool imuRequired = false;
 bool calibrationRunning = false;
 
 enum ActionCommand {
@@ -75,10 +76,13 @@ void updateActionCommand(unsigned long currentMillis);
 unsigned long parseDuration(String text);
 float maxFloat(float a, float b);
 void discardSerialInput();
+void drawImuStatusLine(int y);
+void sendImuStatus();
 void sendCalibrationStart();
 void sendCalibrationOk(float gzBias, unsigned int sampleCount, float accelAxisRange, float accelMagnitudeRange);
 void sendCalibrationFailed(const char* reason, unsigned int sampleCount);
 void calibrateImu();
+void setImuRequired(bool required);
 void processSerialCommand(String commandLine);
 void readSerialCommands();
 void imuLoop();
@@ -119,6 +123,12 @@ void setup() {
   imu.initialize();
   imuConnected = imu.testConnection();
   lastImuSampleMillis = millis();
+  sendImuStatus();
+
+  lcd.clear();
+  drawImuStatusLine(0);
+  lcd.drawString(0, 18, "Waiting serial");
+  lcd.display();
 }
 
 float readDistance() {
@@ -235,7 +245,7 @@ void stopActionCommand() {
 }
 
 void sendActionCommand(ActionCommand command, unsigned long durationMs) {
-  if(calibrationRunning || !imuCalibrated) {
+  if(calibrationRunning || (imuRequired && !imuCalibrated)) {
     stopActionCommand();
     return;
   }
@@ -295,6 +305,36 @@ void discardSerialInput() {
   serialCommandBuffer = "";
 }
 
+void drawImuStatusLine(int y) {
+  String text = "IMU: ";
+  if(!imuRequired && !imuConnected) {
+    text += "off/missing";
+  } else if(!imuRequired) {
+    text += "disabled";
+  } else if(!imuConnected) {
+    text += "missing";
+  } else if(imuCalibrated) {
+    text += "calibrated";
+  } else {
+    text += "connected";
+  }
+
+  lcd.drawString(0, y, text);
+}
+
+void sendImuStatus() {
+  Serial.print(millis());
+  Serial.print(",status,imu,");
+  if(!imuRequired) {
+    Serial.print("disabled,connection,");
+    Serial.println(imuConnected ? "connected" : "missing");
+  } else if(!imuConnected) {
+    Serial.println("missing");
+  } else {
+    Serial.println("connected");
+  }
+}
+
 void sendCalibrationStart() {
   Serial.print(millis());
   Serial.println(",status,calibration,start");
@@ -337,6 +377,12 @@ void calibrateImu() {
     calibrationRunning = false;
     discardSerialInput();
     sendCalibrationFailed("no_imu", 0);
+    sendImuStatus();
+
+    lcd.clear();
+    drawImuStatusLine(0);
+    lcd.drawString(0, 18, "Use I0 for dist");
+    lcd.display();
     return;
   }
 
@@ -431,6 +477,17 @@ void calibrateImu() {
   lcd.display();
 }
 
+void setImuRequired(bool required) {
+  imuRequired = required;
+  if(!imuRequired) {
+    calibrationRunning = false;
+  } else if(!imuCalibrated) {
+    stopActionCommand();
+  }
+
+  sendImuStatus();
+}
+
 void processSerialCommand(String commandLine) {
   commandLine.trim();
   if(commandLine.length() == 0) {
@@ -443,6 +500,16 @@ void processSerialCommand(String commandLine) {
   switch(command) {
     case 'C':
       calibrateImu();
+      break;
+    case 'I':
+      argument.trim();
+      if(argument == "0") {
+        setImuRequired(false);
+      } else if(argument == "1") {
+        setImuRequired(true);
+      } else {
+        sendImuStatus();
+      }
       break;
     case 'F':
       sendActionCommand(ACTION_FORWARD, parseDuration(argument));
@@ -492,7 +559,7 @@ void readSerialCommands() {
 }
 
 void imuLoop() {
-  if(!imuConnected) {
+  if(!imuRequired || !imuConnected) {
     return;
   }
 
@@ -570,12 +637,13 @@ void distanceSensingLoop() {
   text = "Avg: ";
   text += averageDistance;
   text += "cm";
-  lcd.drawString(0, 18, text);
+  lcd.drawString(0, 16, text);
 
   text = "Speed: ";
   text += dutyCycle;
   text += "%";
-  lcd.drawString(0, 36, text);
+  lcd.drawString(0, 32, text);
+  drawImuStatusLine(48);
   lcd.display();
 
   Serial.print(currentMillis);
