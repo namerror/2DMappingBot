@@ -10,6 +10,9 @@ control:
   default_pwm_percent: 30
   brake_duration_ms: 150
 
+sensor:
+  angle_offset_deg: 90.0 # this is the angle offset of the distance sensor relative to the robot forward direction. Positive to the left, negative to the right. Adjust according to your sensor's mounting position.
+
 pose:
   mode: command_estimate
   command_estimate:

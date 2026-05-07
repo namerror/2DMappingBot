@@ -24,6 +24,11 @@ class ControlConfig:
 
 
 @dataclass(frozen=True)
+class SensorConfig:
+    angle_offset_deg: float = 0.0
+
+
+@dataclass(frozen=True)
 class CommandEstimateConfig:
     wheel_diameter_cm: float = 6.5
     track_width_cm: float = 12.0
@@ -47,6 +52,7 @@ class PoseConfig:
 class AppConfig:
     serial: SerialConfig = SerialConfig()
     control: ControlConfig = ControlConfig()
+    sensor: SensorConfig = SensorConfig()
     pose: PoseConfig = PoseConfig()
 
 
@@ -67,6 +73,7 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
 
     serial = _section(raw, "serial")
     control = _section(raw, "control")
+    sensor = _section(raw, "sensor")
     pose = _section(raw, "pose")
     command_estimate = _section(pose, "command_estimate")
     imu_estimate = _section(pose, "imu_estimate")
@@ -88,6 +95,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
                 control.get("default_pwm_percent", ControlConfig.default_pwm_percent)
             ),
             brake_duration_ms=int(control.get("brake_duration_ms", ControlConfig.brake_duration_ms)),
+        ),
+        sensor=SensorConfig(
+            angle_offset_deg=float(sensor.get("angle_offset_deg", SensorConfig.angle_offset_deg)),
         ),
         pose=PoseConfig(
             mode=str(pose.get("mode", PoseConfig.mode)),

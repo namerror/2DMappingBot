@@ -55,8 +55,12 @@ def get_sensor_endpoint(robot_x: float, robot_y: float, angle: float, distance_c
     return end_x, end_y
 
 
-def get_wall_angle(robot_angle: float) -> float:
-    return robot_angle + 90
+def get_sensor_angle(pose_angle: float, sensor_angle_offset_deg: float) -> float:
+    return (pose_angle - sensor_angle_offset_deg) % 360.0
+
+
+def get_wall_angle(sensor_angle: float) -> float:
+    return sensor_angle + 90
 
 
 def draw_text(
@@ -110,9 +114,9 @@ def add_wall_to_map(
     detected_walls: list[dict[str, float]],
     world_x: float,
     world_y: float,
-    robot_angle: float,
+    sensor_angle: float,
 ) -> bool:
-    wall_angle = get_wall_angle(robot_angle)
+    wall_angle = get_wall_angle(sensor_angle)
     for wall in detected_walls:
         dist = math.sqrt((wall["x"] - world_x) ** 2 + (wall["y"] - world_y) ** 2)
         angle_diff = abs(wall["wall_angle"] - wall_angle) % 180
@@ -124,7 +128,7 @@ def add_wall_to_map(
             "x": world_x,
             "y": world_y,
             "wall_angle": wall_angle,
-            "robot_angle": robot_angle,
+            "sensor_angle": sensor_angle,
         }
     )
     return True
@@ -164,6 +168,7 @@ def draw_map(
     pose_x: float,
     pose_y: float,
     pose_angle: float,
+    sensor_angle: float,
     current_distance: float,
     detected_walls: list[dict[str, float]],
 ) -> tuple[float | None, float | None]:
@@ -182,7 +187,7 @@ def draw_map(
     for wall in detected_walls:
         draw_angled_wall(surface, wall["x"], wall["y"], wall["wall_angle"], WALL_LENGTH, WALL_THICKNESS)
 
-    hit = draw_sensor_beam(surface, pose_x, pose_y, pose_angle, current_distance)
+    hit = draw_sensor_beam(surface, pose_x, pose_y, sensor_angle, current_distance)
     draw_robot(surface, pose_x, pose_y, pose_angle)
     return hit
 
@@ -244,6 +249,7 @@ def draw_panel(
     pose_x: float,
     pose_y: float,
     pose_angle: float,
+    sensor_angle: float,
     wall_count: int,
     auto_scan: bool,
     pose_status: str,
@@ -300,7 +306,7 @@ def draw_panel(
 
     if hit[0] is not None and hit[1] is not None and 2 < current_distance < MAX_WALL_DISTANCE_CM:
         draw_text(surface, fonts["small"], f"Hit: ({int(hit[0])}, {int(hit[1])})", x, 760, WARNING_COLOR)
-        draw_text(surface, fonts["small"], f"Wall angle: {int(get_wall_angle(pose_angle)) % 180} deg", x, 780, WARNING_COLOR)
+        draw_text(surface, fonts["small"], f"Wall angle: {int(get_wall_angle(sensor_angle)) % 180} deg", x, 780, WARNING_COLOR)
 
 
 def clamp_pose_to_map(pose_estimator: PoseEstimator) -> None:
@@ -314,11 +320,11 @@ def scan_wall(
     current_distance: float,
     pose_x: float,
     pose_y: float,
-    pose_angle: float,
+    sensor_angle: float,
 ) -> None:
     if 2 < current_distance < MAX_WALL_DISTANCE_CM:
-        wall_x, wall_y = get_sensor_endpoint(pose_x, pose_y, pose_angle, current_distance)
-        if add_wall_to_map(detected_walls, wall_x, wall_y, pose_angle):
+        wall_x, wall_y = get_sensor_endpoint(pose_x, pose_y, sensor_angle, current_distance)
+        if add_wall_to_map(detected_walls, wall_x, wall_y, sensor_angle):
             print(f"Wall added at ({int(wall_x)}, {int(wall_y)})")
         else:
             print("Wall already exists nearby.")
@@ -326,11 +332,12 @@ def scan_wall(
         print(f"No valid wall detected. Distance: {current_distance:.1f} cm")
 
 
-def print_startup(config_path: str, port: str, pose_status: str) -> None:
+def print_startup(config_path: str, port: str, pose_status: str, sensor_angle_offset_deg: float) -> None:
     print("2D Mapping Bot control panel")
     print(f"Config: {config_path}")
     print(f"Serial port: {port}")
     print(f"Pose mode: {pose_status}")
+    print(f"Sensor angle offset: {sensor_angle_offset_deg:.1f} deg (+left, -right)")
     print("")
     print("Controls:")
     print("  Arrow keys or panel buttons: hold to drive")
@@ -381,7 +388,12 @@ def main() -> int:
 
     pose_estimator.reset(start_x, start_y, 0.0)
     controller.set_speed(pwm_percent)
-    print_startup(str(CONFIG_PATH), config.serial.port, pose_estimator.status)
+    print_startup(
+        str(CONFIG_PATH),
+        config.serial.port,
+        pose_estimator.status,
+        config.sensor.angle_offset_deg,
+    )
 
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -419,12 +431,16 @@ def main() -> int:
                         controller.brake()
                         brake_requested = True
                     elif clicked and clicked.name == "scan":
+                        sensor_angle = get_sensor_angle(
+                            pose_estimator.pose.angle_deg,
+                            config.sensor.angle_offset_deg,
+                        )
                         scan_wall(
                             detected_walls,
                             current_distance,
                             pose_estimator.pose.x,
                             pose_estimator.pose.y,
-                            pose_estimator.pose.angle_deg,
+                            sensor_angle,
                         )
                     elif clicked and clicked.name == "clear":
                         detected_walls.clear()
@@ -461,12 +477,16 @@ def main() -> int:
                         auto_scan_last_pos = (pose_estimator.pose.x, pose_estimator.pose.y)
                         print("Pose reset.")
                     elif event.key == pygame.K_s:
+                        sensor_angle = get_sensor_angle(
+                            pose_estimator.pose.angle_deg,
+                            config.sensor.angle_offset_deg,
+                        )
                         scan_wall(
                             detected_walls,
                             current_distance,
                             pose_estimator.pose.x,
                             pose_estimator.pose.y,
-                            pose_estimator.pose.angle_deg,
+                            sensor_angle,
                         )
                     elif event.key == pygame.K_a:
                         auto_scan_mode = not auto_scan_mode
@@ -490,13 +510,14 @@ def main() -> int:
             current_distance = controller.read_distance()
 
             pose = pose_estimator.pose
+            sensor_angle = get_sensor_angle(pose.angle_deg, config.sensor.angle_offset_deg)
             if auto_scan_mode and scan_cooldown <= 0 and 2 < current_distance < MAX_WALL_DISTANCE_CM:
                 moved_dist = math.sqrt(
                     (pose.x - auto_scan_last_pos[0]) ** 2 + (pose.y - auto_scan_last_pos[1]) ** 2
                 )
                 if moved_dist > AUTO_SCAN_MOVE_PX:
-                    wall_x, wall_y = get_sensor_endpoint(pose.x, pose.y, pose.angle_deg, current_distance)
-                    if add_wall_to_map(detected_walls, wall_x, wall_y, pose.angle_deg):
+                    wall_x, wall_y = get_sensor_endpoint(pose.x, pose.y, sensor_angle, current_distance)
+                    if add_wall_to_map(detected_walls, wall_x, wall_y, sensor_angle):
                         print(f"Auto-scan: wall added at ({int(wall_x)}, {int(wall_y)})")
                     auto_scan_last_pos = (pose.x, pose.y)
                     scan_cooldown = SCAN_COOLDOWN_FRAMES
@@ -508,6 +529,7 @@ def main() -> int:
                 pose.x,
                 pose.y,
                 pose.angle_deg,
+                sensor_angle,
                 current_distance,
                 detected_walls,
             )
@@ -520,6 +542,7 @@ def main() -> int:
                 pose.x,
                 pose.y,
                 pose.angle_deg,
+                sensor_angle,
                 len(detected_walls),
                 auto_scan_mode,
                 pose_estimator.status,
