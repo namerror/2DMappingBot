@@ -1,7 +1,10 @@
 #include <SSD1306Wire.h>
 #include <Arduino.h>
+#include <Wire.h>
+#include <MPU6050.h>
 
 SSD1306Wire lcd(0x3c, SDA, SCL);
+MPU6050 imu;
 
 #define TRIG 5
 #define ECHO 16
@@ -12,6 +15,7 @@ SSD1306Wire lcd(0x3c, SDA, SCL);
 #define AIN2 A14
 #define BIN1 A15
 #define BIN2 A16
+#define INT A4
 
 const int PWM_CHANNEL_A = 0;
 const int PWM_CHANNEL_B = 1;
@@ -19,13 +23,20 @@ const int PWM_FREQUENCY = 10000;
 const int PWM_RESOLUTION = 8;
 const int MAX_PWM_DUTY = (1 << PWM_RESOLUTION) - 1;
 const unsigned long DISTANCE_INTERVAL_MS = 100;
+const unsigned long IMU_INTERVAL_MS = 20;
 const unsigned long CONTROL_INTERVAL_MS = 10;
 const unsigned long DEFAULT_ACTION_DURATION_MS = 250;
 const unsigned long MAX_ACTION_DURATION_MS = 10000;
+const float ACCEL_SCALE = 16384.0f;
+const float GYRO_SCALE = 131.0f;
 
 int dutyCycle = 0; // 0-100% duty cycle for motor speed control
 unsigned long lastDistanceMillis = 0;
+unsigned long lastImuMillis = 0;
+unsigned long lastImuSampleMillis = 0;
 unsigned long lastControlMillis = 0;
+float imuYawDeg = 0.0f;
+bool imuConnected = false;
 
 enum ActionCommand {
   ACTION_NONE,
@@ -57,12 +68,14 @@ void updateActionCommand(unsigned long currentMillis);
 unsigned long parseDuration(String text);
 void processSerialCommand(String commandLine);
 void readSerialCommands();
+void imuLoop();
 void distanceSensingLoop();
 void controlLoop();
 
 void setup() {
   //Serial.begin(9600);  // ← ADD THIS: start USB communication to laptop
   Serial.begin(115200); // Displays to Serial monitor
+  Wire.begin(SDA, SCL);
   pinMode(TRIG, OUTPUT);
   pinMode(ECHO, INPUT);
   digitalWrite(TRIG, LOW);
@@ -89,6 +102,10 @@ void setup() {
   ledcAttachPin(PWMA, PWM_CHANNEL_A);
   ledcAttachPin(PWMB, PWM_CHANNEL_B);
   setMotorSpeed(30);
+
+  imu.initialize();
+  imuConnected = imu.testConnection();
+  lastImuSampleMillis = millis();
 }
 
 float readDistance() {
@@ -306,6 +323,59 @@ void readSerialCommands() {
   }
 }
 
+void imuLoop() {
+  if(!imuConnected) {
+    return;
+  }
+
+  unsigned long currentMillis = millis();
+  if(currentMillis - lastImuMillis < IMU_INTERVAL_MS) {
+    return;
+  }
+  lastImuMillis = currentMillis;
+
+  int16_t rawAx = 0;
+  int16_t rawAy = 0;
+  int16_t rawAz = 0;
+  int16_t rawGx = 0;
+  int16_t rawGy = 0;
+  int16_t rawGz = 0;
+  imu.getMotion6(&rawAx, &rawAy, &rawAz, &rawGx, &rawGy, &rawGz);
+
+  float ax = rawAx / ACCEL_SCALE;
+  float ay = rawAy / ACCEL_SCALE;
+  float az = rawAz / ACCEL_SCALE;
+  float gx = rawGx / GYRO_SCALE;
+  float gy = rawGy / GYRO_SCALE;
+  float gz = rawGz / GYRO_SCALE;
+
+  float dtSeconds = (currentMillis - lastImuSampleMillis) / 1000.0f;
+  lastImuSampleMillis = currentMillis;
+  imuYawDeg += gz * dtSeconds;
+  while(imuYawDeg >= 360.0f) {
+    imuYawDeg -= 360.0f;
+  }
+  while(imuYawDeg < 0.0f) {
+    imuYawDeg += 360.0f;
+  }
+
+  Serial.print(currentMillis);
+  Serial.print(",imu,");
+  Serial.print(ax, 4);
+  Serial.print(",");
+  Serial.print(ay, 4);
+  Serial.print(",");
+  Serial.print(az, 4);
+  Serial.print(",");
+  Serial.print(gx, 3);
+  Serial.print(",");
+  Serial.print(gy, 3);
+  Serial.print(",");
+  Serial.print(gz, 3);
+  Serial.print(",");
+  Serial.println(imuYawDeg, 2);
+}
+
 void distanceSensingLoop() {
   unsigned long currentMillis = millis();
   if(currentMillis - lastDistanceMillis < DISTANCE_INTERVAL_MS) {
@@ -340,7 +410,9 @@ void distanceSensingLoop() {
   lcd.drawString(0, 36, text);
   lcd.display();
 
-  Serial.println(averageDistance);
+  Serial.print(currentMillis);
+  Serial.print(",distance,");
+  Serial.println(averageDistance, 2);
 }
 
 void controlLoop() {
@@ -357,5 +429,6 @@ void controlLoop() {
 
 void loop() {
   controlLoop();
+  imuLoop();
   distanceSensingLoop();
 }

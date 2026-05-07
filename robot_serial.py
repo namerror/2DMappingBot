@@ -1,3 +1,4 @@
+import csv
 import time
 from dataclasses import dataclass
 
@@ -15,9 +16,22 @@ COMMAND_CODES = {
 
 
 @dataclass
+class ImuTelemetry:
+    timestamp_ms: int
+    ax: float
+    ay: float
+    az: float
+    gx: float
+    gy: float
+    gz: float
+    yaw: float
+
+
+@dataclass
 class RobotTelemetry:
     distance_cm: float = 100.0
     last_raw_line: str = ""
+    last_imu: ImuTelemetry | None = None
 
 
 class RobotConnectionError(Exception):
@@ -81,17 +95,68 @@ class RobotController:
             self._last_send_time = now
 
     def read_distance(self) -> float:
+        self.poll_telemetry()
+        return self.telemetry.distance_cm
+
+    def poll_telemetry(self) -> None:
         while self._serial.in_waiting > 0:
             line = self._serial.readline().decode("utf-8", errors="ignore").strip()
             if not line:
                 continue
-            self.telemetry.last_raw_line = line
-            try:
-                self.telemetry.distance_cm = float(line)
-            except ValueError:
-                continue
+            self._handle_serial_line(line)
 
-        return self.telemetry.distance_cm
+    def _handle_serial_line(self, line: str) -> None:
+        self.telemetry.last_raw_line = line
+        try:
+            fields = next(csv.reader([line]))
+        except csv.Error:
+            return
+
+        fields = [field.strip() for field in fields]
+        if len(fields) < 2:
+            return
+
+        try:
+            timestamp_ms = int(fields[0])
+        except ValueError:
+            return
+
+        data_type = fields[1].lower()
+        values = fields[2:]
+        if data_type == "distance":
+            self._handle_distance_record(timestamp_ms, values)
+        elif data_type == "imu":
+            self._handle_imu_record(timestamp_ms, values)
+
+    def _handle_distance_record(self, timestamp_ms: int, values: list[str]) -> None:
+        del timestamp_ms
+        if len(values) != 1:
+            return
+
+        try:
+            self.telemetry.distance_cm = float(values[0])
+        except ValueError:
+            return
+
+    def _handle_imu_record(self, timestamp_ms: int, values: list[str]) -> None:
+        if len(values) != 7:
+            return
+
+        try:
+            ax, ay, az, gx, gy, gz, yaw = (float(value) for value in values)
+        except ValueError:
+            return
+
+        self.telemetry.last_imu = ImuTelemetry(
+            timestamp_ms=timestamp_ms,
+            ax=ax,
+            ay=ay,
+            az=az,
+            gx=gx,
+            gy=gy,
+            gz=gz,
+            yaw=yaw,
+        )
 
     def _write(self, command: str) -> None:
         self._serial.write(f"{command}\n".encode("utf-8"))
