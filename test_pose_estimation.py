@@ -67,6 +67,20 @@ pose:
 """
             )
 
+    def test_logging_config_is_loaded(self) -> None:
+        config = self.load_yaml(
+            """
+logging:
+  enabled: false
+  directory: replay_logs
+  flush_each_record: false
+"""
+        )
+
+        self.assertFalse(config.logging.enabled)
+        self.assertEqual(config.logging.directory, "replay_logs")
+        self.assertFalse(config.logging.flush_each_record)
+
 
 class PoseEstimatorTests(unittest.TestCase):
     def command_pose_config(self) -> PoseConfig:

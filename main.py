@@ -7,6 +7,7 @@ import pygame
 from pose_estimator import PoseEstimator
 from robot_config import CONFIG_PATH, load_config
 from robot_serial import RobotCalibrationError, RobotConnectionError, RobotController
+from session_logger import SessionLogger
 
 
 WINDOW_WIDTH = 1800
@@ -330,14 +331,47 @@ def scan_wall(
     pose_x: float,
     pose_y: float,
     sensor_angle: float,
+    session_logger: SessionLogger | None = None,
+    scan_source: str = "manual",
 ) -> None:
     if 2 < current_distance < MAX_WALL_DISTANCE_CM:
         wall_x, wall_y = get_sensor_endpoint(pose_x, pose_y, sensor_angle, current_distance)
-        if add_wall_to_map(detected_walls, wall_x, wall_y, sensor_angle):
+        added = add_wall_to_map(detected_walls, wall_x, wall_y, sensor_angle)
+        if session_logger is not None:
+            session_logger.log_event(
+                "app",
+                "scan_decision",
+                {
+                    "scan_source": scan_source,
+                    "outcome": "added" if added else "rejected_existing",
+                    "distance_cm": current_distance,
+                    "pose_x": pose_x,
+                    "pose_y": pose_y,
+                    "sensor_angle_deg": sensor_angle,
+                    "wall_x": wall_x,
+                    "wall_y": wall_y,
+                },
+            )
+        if added:
             print(f"Wall added at ({int(wall_x)}, {int(wall_y)})")
         else:
             print("Wall already exists nearby.")
     else:
+        if session_logger is not None:
+            session_logger.log_event(
+                "app",
+                "scan_decision",
+                {
+                    "scan_source": scan_source,
+                    "outcome": "invalid_distance",
+                    "distance_cm": current_distance,
+                    "pose_x": pose_x,
+                    "pose_y": pose_y,
+                    "sensor_angle_deg": sensor_angle,
+                    "wall_x": None,
+                    "wall_y": None,
+                },
+            )
         print(f"No valid wall detected. Distance: {current_distance:.1f} cm")
 
 
@@ -347,6 +381,7 @@ def print_startup(
     pose_status: str,
     sensor_angle_offset_deg: float,
     imu_required: bool,
+    log_path: str | None,
 ) -> None:
     print("2D Mapping Bot control panel")
     print(f"Config: {config_path}")
@@ -354,6 +389,7 @@ def print_startup(
     print(f"Pose mode: {pose_status}")
     print(f"IMU required: {'yes' if imu_required else 'no (command estimate)'}")
     print(f"Sensor angle offset: {sensor_angle_offset_deg:.1f} deg (+left, -right)")
+    print(f"Session log: {log_path if log_path else 'disabled'}")
     print("")
     print("Controls:")
     print("  Arrow keys or panel buttons: hold to drive")
@@ -389,15 +425,28 @@ def main() -> int:
     imu_required = config.pose.mode == "imu_estimate"
     start_x = MAP_WIDTH // 2
     start_y = WINDOW_HEIGHT // 2
+    session_logger = SessionLogger.from_config(config.logging)
+    session_logger.log_event(
+        "app",
+        "session_start",
+        {
+            "config_path": str(CONFIG_PATH),
+            "pose_mode": config.pose.mode,
+            "serial_port": config.serial.port,
+            "baud_rate": config.serial.baud_rate,
+            "sensor_angle_offset_deg": config.sensor.angle_offset_deg,
+        },
+    )
     pose_estimator = PoseEstimator(config.pose, start_x, start_y, DISTANCE_SCALE)
     pwm_percent = max(0, min(100, config.control.default_pwm_percent))
 
     try:
-        controller = RobotController(config.serial, config.control)
+        controller = RobotController(config.serial, config.control, session_logger)
     except RobotConnectionError as exc:
         print(f"ERROR: Could not open serial port {config.serial.port}.")
         print("Make sure the robot is connected and Serial Monitor is closed.")
         print(f"Details: {exc}")
+        session_logger.close()
         return 1
 
     controller.set_imu_required(imu_required)
@@ -409,6 +458,7 @@ def main() -> int:
             print("Leave the robot still, then restart the control app to try again.")
             print(f"Details: {exc}")
             controller.close()
+            session_logger.close()
             return 1
     else:
         print("IMU calibration skipped: pose.mode=command_estimate; using command estimate.")
@@ -421,6 +471,7 @@ def main() -> int:
         pose_estimator.status,
         config.sensor.angle_offset_deg,
         imu_required,
+        str(session_logger.path) if session_logger.path is not None else None,
     )
 
     pygame.init()
@@ -469,17 +520,40 @@ def main() -> int:
                             pose_estimator.pose.x,
                             pose_estimator.pose.y,
                             sensor_angle,
+                            session_logger,
+                            "manual_mouse",
                         )
                     elif clicked and clicked.name == "clear":
+                        wall_count_before = len(detected_walls)
                         detected_walls.clear()
+                        session_logger.log_event(
+                            "app",
+                            "map_clear",
+                            {"source": "mouse", "wall_count_before": wall_count_before},
+                        )
                         print("Map cleared.")
                     elif clicked and clicked.name == "reset":
                         pose_estimator.reset(start_x, start_y)
                         auto_scan_last_pos = (pose_estimator.pose.x, pose_estimator.pose.y)
+                        session_logger.log_event(
+                            "app",
+                            "pose_reset",
+                            {
+                                "source": "mouse",
+                                "pose_x": pose_estimator.pose.x,
+                                "pose_y": pose_estimator.pose.y,
+                                "pose_angle_deg": pose_estimator.pose.angle_deg,
+                            },
+                        )
                         print("Pose reset.")
                     elif clicked and clicked.name == "auto":
                         auto_scan_mode = not auto_scan_mode
                         auto_scan_last_pos = (pose_estimator.pose.x, pose_estimator.pose.y)
+                        session_logger.log_event(
+                            "app",
+                            "auto_scan_toggle",
+                            {"source": "mouse", "enabled": auto_scan_mode},
+                        )
                         print(f"Auto-scan: {'ON' if auto_scan_mode else 'OFF'}")
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     mouse_down = False
@@ -492,17 +566,35 @@ def main() -> int:
                     elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
                         pwm_percent = min(100, pwm_percent + 5)
                         controller.set_speed(pwm_percent)
+                        session_logger.log_event("app", "pwm_change", {"pwm_percent": pwm_percent})
                         print(f"PWM: {pwm_percent}%")
                     elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                         pwm_percent = max(0, pwm_percent - 5)
                         controller.set_speed(pwm_percent)
+                        session_logger.log_event("app", "pwm_change", {"pwm_percent": pwm_percent})
                         print(f"PWM: {pwm_percent}%")
                     elif event.key == pygame.K_c:
+                        wall_count_before = len(detected_walls)
                         detected_walls.clear()
+                        session_logger.log_event(
+                            "app",
+                            "map_clear",
+                            {"source": "keyboard", "wall_count_before": wall_count_before},
+                        )
                         print("Map cleared.")
                     elif event.key == pygame.K_r:
                         pose_estimator.reset(start_x, start_y)
                         auto_scan_last_pos = (pose_estimator.pose.x, pose_estimator.pose.y)
+                        session_logger.log_event(
+                            "app",
+                            "pose_reset",
+                            {
+                                "source": "keyboard",
+                                "pose_x": pose_estimator.pose.x,
+                                "pose_y": pose_estimator.pose.y,
+                                "pose_angle_deg": pose_estimator.pose.angle_deg,
+                            },
+                        )
                         print("Pose reset.")
                     elif event.key == pygame.K_s:
                         sensor_angle = get_sensor_angle(
@@ -515,10 +607,17 @@ def main() -> int:
                             pose_estimator.pose.x,
                             pose_estimator.pose.y,
                             sensor_angle,
+                            session_logger,
+                            "manual_keyboard",
                         )
                     elif event.key == pygame.K_a:
                         auto_scan_mode = not auto_scan_mode
                         auto_scan_last_pos = (pose_estimator.pose.x, pose_estimator.pose.y)
+                        session_logger.log_event(
+                            "app",
+                            "auto_scan_toggle",
+                            {"source": "keyboard", "enabled": auto_scan_mode},
+                        )
                         print(f"Auto-scan: {'ON' if auto_scan_mode else 'OFF'}")
 
             mouse_button = selected_mouse_button(buttons, mouse_down)
@@ -534,19 +633,43 @@ def main() -> int:
             last_drive_action = drive_action
 
             controller.poll_telemetry()
+            imu_samples_used = 0
+            reused_last_imu = False
             if imu_required:
                 imu_samples = controller.drain_imu_samples()
                 if imu_samples:
+                    imu_samples_used = len(imu_samples)
                     for imu_sample in imu_samples:
                         pose_estimator.update_imu(imu_sample)
                 else:
                     pose_estimator.update_imu(controller.telemetry.last_imu)
+                    reused_last_imu = controller.telemetry.last_imu is not None
             else:
                 pose_estimator.update(drive_action, pwm_percent, dt_seconds)
             clamp_pose_to_map(pose_estimator)
             current_distance = controller.telemetry.distance_cm
 
             pose = pose_estimator.pose
+            last_imu = controller.telemetry.last_imu
+            session_logger.log_event(
+                "app",
+                "pose_update",
+                {
+                    "mode": config.pose.mode,
+                    "dt_seconds": dt_seconds,
+                    "drive_action": drive_action,
+                    "pwm_percent": pwm_percent,
+                    "distance_cm": current_distance,
+                    "pose_x": pose.x,
+                    "pose_y": pose.y,
+                    "pose_angle_deg": pose.angle_deg,
+                    "imu_samples_used": imu_samples_used,
+                    "reused_last_imu": reused_last_imu,
+                    "pose_status": pose_estimator.status,
+                },
+                robot_timestamp_ms=last_imu.timestamp_ms if last_imu is not None else None,
+                robot_seq=last_imu.robot_seq if last_imu is not None else None,
+            )
             sensor_angle = get_sensor_angle(pose.angle_deg, config.sensor.angle_offset_deg)
             if auto_scan_mode and scan_cooldown <= 0 and 2 < current_distance < MAX_WALL_DISTANCE_CM:
                 moved_dist = math.sqrt(
@@ -554,7 +677,23 @@ def main() -> int:
                 )
                 if moved_dist > AUTO_SCAN_MOVE_PX:
                     wall_x, wall_y = get_sensor_endpoint(pose.x, pose.y, sensor_angle, current_distance)
-                    if add_wall_to_map(detected_walls, wall_x, wall_y, sensor_angle):
+                    added = add_wall_to_map(detected_walls, wall_x, wall_y, sensor_angle)
+                    session_logger.log_event(
+                        "app",
+                        "scan_decision",
+                        {
+                            "scan_source": "auto",
+                            "outcome": "added" if added else "rejected_existing",
+                            "distance_cm": current_distance,
+                            "pose_x": pose.x,
+                            "pose_y": pose.y,
+                            "sensor_angle_deg": sensor_angle,
+                            "wall_x": wall_x,
+                            "wall_y": wall_y,
+                            "moved_dist_px": moved_dist,
+                        },
+                    )
+                    if added:
                         print(f"Auto-scan: wall added at ({int(wall_x)}, {int(wall_y)})")
                     auto_scan_last_pos = (pose.x, pose.y)
                     scan_cooldown = SCAN_COOLDOWN_FRAMES
@@ -592,6 +731,7 @@ def main() -> int:
     finally:
         controller.stop()
         controller.close()
+        session_logger.close()
         pygame.quit()
 
     return 0

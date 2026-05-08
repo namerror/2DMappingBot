@@ -43,3 +43,4 @@ fp-info-cache
 .pio/
 .venv/
 __pycache__/
+logs/

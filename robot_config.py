@@ -59,11 +59,19 @@ class PoseConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    enabled: bool = True
+    directory: str = "logs"
+    flush_each_record: bool = True
+
+
+@dataclass(frozen=True)
 class AppConfig:
     serial: SerialConfig = SerialConfig()
     control: ControlConfig = ControlConfig()
     sensor: SensorConfig = SensorConfig()
     pose: PoseConfig = PoseConfig()
+    logging: LoggingConfig = LoggingConfig()
 
 
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -95,6 +103,19 @@ def _validate_distinct_axes(forward_axis: str, left_axis: str, up_axis: str) -> 
         )
 
 
+def _bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     if not path.exists():
         return AppConfig()
@@ -109,6 +130,7 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     control = _section(raw, "control")
     sensor = _section(raw, "sensor")
     pose = _section(raw, "pose")
+    logging = _section(raw, "logging")
     command_estimate = _section(pose, "command_estimate")
     imu_estimate = _section(pose, "imu_estimate")
     forward_axis = _signed_axis(imu_estimate, "forward_axis", ImuEstimateConfig.forward_axis)
@@ -209,6 +231,14 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
                     0.001,
                     float(imu_estimate.get("max_dt_seconds", ImuEstimateConfig.max_dt_seconds)),
                 ),
+            ),
+        ),
+        logging=LoggingConfig(
+            enabled=_bool(logging.get("enabled"), LoggingConfig.enabled),
+            directory=str(logging.get("directory", LoggingConfig.directory)),
+            flush_each_record=_bool(
+                logging.get("flush_each_record"),
+                LoggingConfig.flush_each_record,
             ),
         ),
     )

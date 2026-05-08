@@ -59,6 +59,7 @@ ActionCommand activeAction = ACTION_NONE;
 unsigned long actionStartMillis = 0;
 unsigned long actionDurationMs = 0;
 String serialCommandBuffer = "";
+unsigned long telemetrySequence = 0;
 
 float readDistance();
 float getAverage();
@@ -77,6 +78,7 @@ unsigned long parseDuration(String text);
 float maxFloat(float a, float b);
 void discardSerialInput();
 void drawImuStatusLine(int y);
+void printTelemetryHeader(unsigned long timestampMs, const char* recordType);
 void sendImuStatus();
 void sendCalibrationStart();
 void sendCalibrationOk(float gzBias, unsigned int sampleCount, float accelAxisRange, float accelMagnitudeRange);
@@ -322,9 +324,19 @@ void drawImuStatusLine(int y) {
   lcd.drawString(0, y, text);
 }
 
+void printTelemetryHeader(unsigned long timestampMs, const char* recordType) {
+  telemetrySequence++;
+  Serial.print(timestampMs);
+  Serial.print(",");
+  Serial.print(telemetrySequence);
+  Serial.print(",");
+  Serial.print(recordType);
+  Serial.print(",");
+}
+
 void sendImuStatus() {
-  Serial.print(millis());
-  Serial.print(",status,imu,");
+  printTelemetryHeader(millis(), "status");
+  Serial.print("imu,");
   if(!imuRequired) {
     Serial.print("disabled,connection,");
     Serial.println(imuConnected ? "connected" : "missing");
@@ -336,13 +348,13 @@ void sendImuStatus() {
 }
 
 void sendCalibrationStart() {
-  Serial.print(millis());
-  Serial.println(",status,calibration,start");
+  printTelemetryHeader(millis(), "status");
+  Serial.println("calibration,start");
 }
 
 void sendCalibrationOk(float gzBias, unsigned int sampleCount, float accelAxisRange, float accelMagnitudeRange) {
-  Serial.print(millis());
-  Serial.print(",status,calibration,ok,gz_bias,");
+  printTelemetryHeader(millis(), "status");
+  Serial.print("calibration,ok,gz_bias,");
   Serial.print(gzBias, 4);
   Serial.print(",samples,");
   Serial.print(sampleCount);
@@ -353,8 +365,8 @@ void sendCalibrationOk(float gzBias, unsigned int sampleCount, float accelAxisRa
 }
 
 void sendCalibrationFailed(const char* reason, unsigned int sampleCount) {
-  Serial.print(millis());
-  Serial.print(",status,calibration,failed,");
+  printTelemetryHeader(millis(), "status");
+  Serial.print("calibration,failed,");
   Serial.print(reason);
   Serial.print(",samples,");
   Serial.println(sampleCount);
@@ -594,8 +606,7 @@ void imuLoop() {
     imuYawDeg += 360.0f;
   }
 
-  Serial.print(currentMillis);
-  Serial.print(",imu,");
+  printTelemetryHeader(currentMillis, "imu");
   Serial.print(ax, 4);
   Serial.print(",");
   Serial.print(ay, 4);
@@ -646,8 +657,7 @@ void distanceSensingLoop() {
   drawImuStatusLine(48);
   lcd.display();
 
-  Serial.print(currentMillis);
-  Serial.print(",distance,");
+  printTelemetryHeader(currentMillis, "distance");
   Serial.println(averageDistance, 2);
 }
 
