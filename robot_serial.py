@@ -44,6 +44,7 @@ class RobotTelemetry:
     distance_cm: float = 100.0
     last_raw_line: str = ""
     last_imu: ImuTelemetry | None = None
+    imu_samples: list[ImuTelemetry] = field(default_factory=list)
     last_imu_status: str | None = None
     last_calibration: CalibrationStatus | None = None
 
@@ -153,6 +154,11 @@ class RobotController:
         self.poll_telemetry()
         return self.telemetry.distance_cm
 
+    def drain_imu_samples(self) -> list[ImuTelemetry]:
+        samples = self.telemetry.imu_samples
+        self.telemetry.imu_samples = []
+        return samples
+
     def poll_telemetry(self) -> None:
         while self._serial.in_waiting > 0:
             line = self._serial.readline().decode("utf-8", errors="ignore").strip()
@@ -204,7 +210,7 @@ class RobotController:
         except ValueError:
             return
 
-        self.telemetry.last_imu = ImuTelemetry(
+        imu = ImuTelemetry(
             timestamp_ms=timestamp_ms,
             ax=ax,
             ay=ay,
@@ -214,6 +220,8 @@ class RobotController:
             gz=gz,
             yaw=yaw,
         )
+        self.telemetry.last_imu = imu
+        self.telemetry.imu_samples.append(imu)
 
     def _handle_status_record(self, timestamp_ms: int, values: list[str]) -> None:
         if len(values) < 2:

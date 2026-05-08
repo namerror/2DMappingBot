@@ -284,7 +284,11 @@ def draw_panel(
     imu_color = MUTED_TEXT_COLOR if imu_required else WARNING_COLOR
     draw_text(surface, fonts["small"], imu_text, x, y, imu_color)
     y += 22
-    status_color = WARNING_COLOR if "not implemented" in pose_status else MUTED_TEXT_COLOR
+    status_color = (
+        WARNING_COLOR
+        if "waiting" in pose_status or "bias" in pose_status or "not implemented" in pose_status
+        else MUTED_TEXT_COLOR
+    )
     draw_text(surface, fonts["small"], pose_status, x, y, status_color)
 
     for button in buttons:
@@ -348,7 +352,7 @@ def print_startup(
     print(f"Config: {config_path}")
     print(f"Serial port: {port}")
     print(f"Pose mode: {pose_status}")
-    print(f"IMU required: {'yes' if imu_required else 'no (distance-only)'}")
+    print(f"IMU required: {'yes' if imu_required else 'no (command estimate)'}")
     print(f"Sensor angle offset: {sensor_angle_offset_deg:.1f} deg (+left, -right)")
     print("")
     print("Controls:")
@@ -375,8 +379,14 @@ def print_calibration_summary(controller: RobotController) -> None:
 
 
 def main() -> int:
-    config = load_config()
-    imu_required = config.pose.imu_estimate.enabled
+    try:
+        config = load_config()
+    except ValueError as exc:
+        print(f"ERROR: Invalid config in {CONFIG_PATH}.")
+        print(f"Details: {exc}")
+        return 1
+
+    imu_required = config.pose.mode == "imu_estimate"
     start_x = MAP_WIDTH // 2
     start_y = WINDOW_HEIGHT // 2
     pose_estimator = PoseEstimator(config.pose, start_x, start_y, DISTANCE_SCALE)
@@ -401,7 +411,7 @@ def main() -> int:
             controller.close()
             return 1
     else:
-        print("IMU calibration skipped: imu_estimate.enabled=false; using distance-only mode.")
+        print("IMU calibration skipped: pose.mode=command_estimate; using command estimate.")
 
     pose_estimator.reset(start_x, start_y, 0.0)
     controller.set_speed(pwm_percent)
@@ -523,9 +533,18 @@ def main() -> int:
                 controller.stop()
             last_drive_action = drive_action
 
-            pose_estimator.update(drive_action, pwm_percent, dt_seconds)
+            controller.poll_telemetry()
+            if imu_required:
+                imu_samples = controller.drain_imu_samples()
+                if imu_samples:
+                    for imu_sample in imu_samples:
+                        pose_estimator.update_imu(imu_sample)
+                else:
+                    pose_estimator.update_imu(controller.telemetry.last_imu)
+            else:
+                pose_estimator.update(drive_action, pwm_percent, dt_seconds)
             clamp_pose_to_map(pose_estimator)
-            current_distance = controller.read_distance()
+            current_distance = controller.telemetry.distance_cm
 
             pose = pose_estimator.pose
             sensor_angle = get_sensor_angle(pose.angle_deg, config.sensor.angle_offset_deg)

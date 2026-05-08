@@ -43,7 +43,7 @@ float imuYawDeg = 0.0f;
 float gyroZBias = 0.0f;
 bool imuConnected = false;
 bool imuCalibrated = false;
-bool imuRequired = false;
+bool imuRequired = true;
 bool calibrationRunning = false;
 
 enum ActionCommand {
