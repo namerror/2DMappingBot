@@ -34,11 +34,15 @@ const float GYRO_SCALE = 131.0f;
 const float ACCEL_AXIS_STABILITY_THRESHOLD_G = 0.05f;
 const float ACCEL_MAG_STABILITY_THRESHOLD_G = 0.06f;
 
-int dutyCycle = 0; // 0-100% duty cycle for motor speed control
+int dutyCycle = 0; // Target 0-100% duty cycle from host control.
+float appliedDutyCycle = 0.0f;
+bool wheelRampEnabled = false;
+float wheelRampRatePercentPerSecond = 100.0f;
 unsigned long lastDistanceMillis = 0;
 unsigned long lastImuMillis = 0;
 unsigned long lastImuSampleMillis = 0;
 unsigned long lastControlMillis = 0;
+unsigned long lastWheelRampMillis = 0;
 float imuYawDeg = 0.0f;
 float gyroZBias = 0.0f;
 bool imuConnected = false;
@@ -55,14 +59,29 @@ enum ActionCommand {
   ACTION_BRAKE
 };
 
+enum WheelMode {
+  WHEEL_STOP,
+  WHEEL_FORWARD,
+  WHEEL_BACKWARD,
+  WHEEL_LEFT,
+  WHEEL_RIGHT
+};
+
 ActionCommand activeAction = ACTION_NONE;
+WheelMode requestedWheelMode = WHEEL_STOP;
+WheelMode activeWheelMode = WHEEL_STOP;
 unsigned long actionStartMillis = 0;
 unsigned long actionDurationMs = 0;
 String serialCommandBuffer = "";
 
 float readDistance();
 float getAverage();
+bool isDriveWheelMode(WheelMode mode);
+void setAppliedMotorSpeed(float speed);
 void setMotorSpeed(int speed);
+void setWheelPins(WheelMode mode);
+void wheel(WheelMode mode);
+void forceStopMotors();
 void moveForward();
 void moveBackward();
 void stopMotors();
@@ -71,9 +90,12 @@ void turnLeft();
 void turnRight();
 void applyActionCommand(ActionCommand command);
 void stopActionCommand();
+void forceStopActionCommand();
 void sendActionCommand(ActionCommand command, unsigned long durationMs);
 void updateActionCommand(unsigned long currentMillis);
 unsigned long parseDuration(String text);
+void configureWheelRamp(String argument);
+void updateWheelRamp(unsigned long currentMillis);
 float maxFloat(float a, float b);
 void discardSerialInput();
 void drawImuStatusLine(int y);
@@ -118,7 +140,7 @@ void setup() {
   ledcSetup(PWM_CHANNEL_B, PWM_FREQUENCY, PWM_RESOLUTION);
   ledcAttachPin(PWMA, PWM_CHANNEL_A);
   ledcAttachPin(PWMB, PWM_CHANNEL_B);
-  setMotorSpeed(80);
+  forceStopMotors();
 
   imu.initialize();
   imuConnected = imu.testConnection();
@@ -160,58 +182,117 @@ float getAverage() {
   return sum / K;
 }
 
-void setMotorSpeed(int speed) {
-  dutyCycle = constrain(speed, 0, 100);
-  int pwmValue = map(dutyCycle, 0, 100, 0, MAX_PWM_DUTY);
+bool isDriveWheelMode(WheelMode mode) {
+  return mode != WHEEL_STOP;
+}
+
+void setAppliedMotorSpeed(float speed) {
+  if(speed < 0.0f) {
+    speed = 0.0f;
+  }
+  if(speed > 100.0f) {
+    speed = 100.0f;
+  }
+
+  appliedDutyCycle = speed;
+  int pwmValue = (int)((appliedDutyCycle * MAX_PWM_DUTY / 100.0f) + 0.5f);
 
   ledcWrite(PWM_CHANNEL_A, pwmValue);
   ledcWrite(PWM_CHANNEL_B, pwmValue);
 }
 
+void setMotorSpeed(int speed) {
+  dutyCycle = constrain(speed, 0, 100);
+  if(!wheelRampEnabled) {
+    setAppliedMotorSpeed(isDriveWheelMode(activeWheelMode) ? dutyCycle : 0);
+  }
+}
+
+void setWheelPins(WheelMode mode) {
+  switch(mode) {
+    case WHEEL_FORWARD:
+      // CW for both motors
+      digitalWrite(AIN1, HIGH);
+      digitalWrite(AIN2, LOW);
+      digitalWrite(BIN1, HIGH);
+      digitalWrite(BIN2, LOW);
+      break;
+    case WHEEL_BACKWARD:
+      // CCW for both motors
+      digitalWrite(AIN1, LOW);
+      digitalWrite(AIN2, HIGH);
+      digitalWrite(BIN1, LOW);
+      digitalWrite(BIN2, HIGH);
+      break;
+    case WHEEL_LEFT:
+      // Left motor CCW, right motor CW
+      digitalWrite(AIN1, LOW);
+      digitalWrite(AIN2, HIGH);
+      digitalWrite(BIN1, HIGH);
+      digitalWrite(BIN2, LOW);
+      break;
+    case WHEEL_RIGHT:
+      // Left motor CW, right motor CCW
+      digitalWrite(AIN1, HIGH);
+      digitalWrite(AIN2, LOW);
+      digitalWrite(BIN1, LOW);
+      digitalWrite(BIN2, HIGH);
+      break;
+    case WHEEL_STOP:
+    default:
+      digitalWrite(AIN1, LOW);
+      digitalWrite(AIN2, LOW);
+      digitalWrite(BIN1, LOW);
+      digitalWrite(BIN2, LOW);
+      break;
+  }
+}
+
+void wheel(WheelMode mode) {
+  bool modeChanged = mode != requestedWheelMode;
+  requestedWheelMode = mode;
+
+  if(wheelRampEnabled) {
+    if(modeChanged) {
+      lastWheelRampMillis = 0;
+    }
+    return;
+  }
+
+  activeWheelMode = requestedWheelMode;
+  setWheelPins(activeWheelMode);
+  setAppliedMotorSpeed(isDriveWheelMode(activeWheelMode) ? dutyCycle : 0);
+}
+
+void forceStopMotors() {
+  requestedWheelMode = WHEEL_STOP;
+  activeWheelMode = WHEEL_STOP;
+  setAppliedMotorSpeed(0);
+  setWheelPins(WHEEL_STOP);
+}
+
 void moveForward() {
-  // CW for both motors
-  digitalWrite(AIN1, HIGH);
-  digitalWrite(AIN2, LOW);
-  digitalWrite(BIN1, HIGH);
-  digitalWrite(BIN2, LOW);
+  wheel(WHEEL_FORWARD);
 }
 
 void moveBackward() {
-  // CCW for both motors
-  digitalWrite(AIN1, LOW);
-  digitalWrite(AIN2, HIGH);
-  digitalWrite(BIN1, LOW);
-  digitalWrite(BIN2, HIGH);
+  wheel(WHEEL_BACKWARD);
 }
 
 void stopMotors() {
-  digitalWrite(AIN1, LOW);
-  digitalWrite(AIN2, LOW);
-  digitalWrite(BIN1, LOW);
-  digitalWrite(BIN2, LOW);
+  wheel(WHEEL_STOP);
 }
 
 void shortBrake() {
-  digitalWrite(AIN1, HIGH);
-  digitalWrite(AIN2, HIGH);
-  digitalWrite(BIN1, HIGH);
-  digitalWrite(BIN2, HIGH);
+  wheel(WHEEL_STOP);
 }
 
 void turnLeft() {
-  // Left motor CCW, right motor CW
-  digitalWrite(AIN1, LOW);
-  digitalWrite(AIN2, HIGH);
-  digitalWrite(BIN1, HIGH);
-  digitalWrite(BIN2, LOW);
+  wheel(WHEEL_LEFT);
 }
 
 void turnRight() {
-  // Left motor CW, right motor CCW
-  digitalWrite(AIN1, HIGH);
-  digitalWrite(AIN2, LOW);
-  digitalWrite(BIN1, LOW);
-  digitalWrite(BIN2, HIGH);
+  wheel(WHEEL_RIGHT);
 }
 
 void applyActionCommand(ActionCommand command) {
@@ -244,9 +325,15 @@ void stopActionCommand() {
   stopMotors();
 }
 
+void forceStopActionCommand() {
+  activeAction = ACTION_NONE;
+  actionDurationMs = 0;
+  forceStopMotors();
+}
+
 void sendActionCommand(ActionCommand command, unsigned long durationMs) {
   if(calibrationRunning || (imuRequired && !imuCalibrated)) {
-    stopActionCommand();
+    forceStopActionCommand();
     return;
   }
 
@@ -292,6 +379,88 @@ unsigned long parseDuration(String text) {
   }
 
   return durationMs;
+}
+
+void configureWheelRamp(String argument) {
+  argument.trim();
+  int commaIndex = argument.indexOf(',');
+  String enabledText = commaIndex >= 0 ? argument.substring(0, commaIndex) : argument;
+  enabledText.trim();
+
+  bool enabled = enabledText.toInt() != 0;
+  float rate = wheelRampRatePercentPerSecond;
+  if(commaIndex >= 0) {
+    String rateText = argument.substring(commaIndex + 1);
+    rateText.trim();
+    if(rateText.length() > 0) {
+      rate = rateText.toFloat();
+    }
+  }
+
+  if(enabled && rate <= 0.0f) {
+    return;
+  }
+
+  wheelRampEnabled = enabled;
+  if(rate > 0.0f) {
+    wheelRampRatePercentPerSecond = rate;
+  }
+  lastWheelRampMillis = 0;
+
+  if(!wheelRampEnabled) {
+    activeWheelMode = requestedWheelMode;
+    setWheelPins(activeWheelMode);
+    setAppliedMotorSpeed(isDriveWheelMode(activeWheelMode) ? dutyCycle : 0);
+  } else if(!isDriveWheelMode(activeWheelMode)) {
+    setAppliedMotorSpeed(0);
+  }
+}
+
+void updateWheelRamp(unsigned long currentMillis) {
+  if(!wheelRampEnabled) {
+    return;
+  }
+
+  if(lastWheelRampMillis == 0) {
+    lastWheelRampMillis = currentMillis;
+    return;
+  }
+
+  unsigned long elapsedMillis = currentMillis - lastWheelRampMillis;
+  if(elapsedMillis == 0) {
+    return;
+  }
+  lastWheelRampMillis = currentMillis;
+
+  if(requestedWheelMode != activeWheelMode && appliedDutyCycle <= 0.0f) {
+    activeWheelMode = requestedWheelMode;
+    setWheelPins(activeWheelMode);
+  }
+
+  float desiredDutyCycle = 0.0f;
+  if(requestedWheelMode == activeWheelMode && isDriveWheelMode(activeWheelMode)) {
+    desiredDutyCycle = dutyCycle;
+  }
+
+  float maxChange = wheelRampRatePercentPerSecond * elapsedMillis / 1000.0f;
+  if(appliedDutyCycle < desiredDutyCycle) {
+    appliedDutyCycle += maxChange;
+    if(appliedDutyCycle > desiredDutyCycle) {
+      appliedDutyCycle = desiredDutyCycle;
+    }
+  } else if(appliedDutyCycle > desiredDutyCycle) {
+    appliedDutyCycle -= maxChange;
+    if(appliedDutyCycle < desiredDutyCycle) {
+      appliedDutyCycle = desiredDutyCycle;
+    }
+  }
+
+  setAppliedMotorSpeed(appliedDutyCycle);
+
+  if(requestedWheelMode != activeWheelMode && appliedDutyCycle <= 0.0f) {
+    activeWheelMode = requestedWheelMode;
+    setWheelPins(activeWheelMode);
+  }
 }
 
 float maxFloat(float a, float b) {
@@ -361,7 +530,7 @@ void sendCalibrationFailed(const char* reason, unsigned int sampleCount) {
 }
 
 void calibrateImu() {
-  stopActionCommand();
+  forceStopActionCommand();
   calibrationRunning = true;
   imuCalibrated = false;
   gyroZBias = 0.0f;
@@ -401,7 +570,7 @@ void calibrateImu() {
   unsigned long lastSampleMillis = 0;
 
   while(millis() - startMillis < CALIBRATION_DURATION_MS) {
-    stopMotors();
+    forceStopMotors();
 
     unsigned long currentMillis = millis();
     if(currentMillis - lastSampleMillis >= CALIBRATION_SAMPLE_INTERVAL_MS) {
@@ -482,7 +651,7 @@ void setImuRequired(bool required) {
   if(!imuRequired) {
     calibrationRunning = false;
   } else if(!imuCalibrated) {
-    stopActionCommand();
+    forceStopActionCommand();
   }
 
   sendImuStatus();
@@ -532,6 +701,9 @@ void processSerialCommand(String commandLine) {
       break;
     case 'V':
       setMotorSpeed(argument.toInt());
+      break;
+    case 'W':
+      configureWheelRamp(argument);
       break;
     default:
       break;
@@ -660,7 +832,7 @@ void controlLoop() {
 
   readSerialCommands();
   updateActionCommand(currentMillis);
-
+  updateWheelRamp(currentMillis);
 }
 
 void loop() {

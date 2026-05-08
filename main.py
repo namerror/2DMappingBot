@@ -414,6 +414,7 @@ def main() -> int:
         print("IMU calibration skipped: pose.mode=command_estimate; using command estimate.")
 
     pose_estimator.reset(start_x, start_y, 0.0)
+    controller.configure_wheel_ramp()
     controller.set_speed(pwm_percent)
     print_startup(
         str(CONFIG_PATH),

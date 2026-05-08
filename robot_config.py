@@ -18,11 +18,33 @@ class SerialConfig:
 
 
 @dataclass(frozen=True)
+class WheelRampConfig:
+    enabled: bool = False
+    rate_percent_per_second: float = 100.0
+
+
+@dataclass(frozen=True)
 class ControlConfig:
     command_interval_ms: int = 75
     command_duration_ms: int = 150
     default_pwm_percent: int = 50
     brake_duration_ms: int = 150
+    wheel_ramp: WheelRampConfig = WheelRampConfig()
+
+
+def _bool_value(section: dict[str, Any], key: str, default: bool, config_key: str) -> bool:
+    value = section.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    raise ValueError(f"Invalid {config_key} {value!r}; expected a boolean")
 
 
 @dataclass(frozen=True)
@@ -107,10 +129,25 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
 
     serial = _section(raw, "serial")
     control = _section(raw, "control")
+    wheel_ramp = _section(control, "wheel_ramp")
     sensor = _section(raw, "sensor")
     pose = _section(raw, "pose")
     command_estimate = _section(pose, "command_estimate")
     imu_estimate = _section(pose, "imu_estimate")
+    wheel_ramp_enabled = _bool_value(
+        wheel_ramp,
+        "enabled",
+        WheelRampConfig.enabled,
+        "control.wheel_ramp.enabled",
+    )
+    wheel_ramp_rate = float(
+        wheel_ramp.get(
+            "rate_percent_per_second",
+            WheelRampConfig.rate_percent_per_second,
+        )
+    )
+    if wheel_ramp_enabled and wheel_ramp_rate <= 0:
+        raise ValueError("control.wheel_ramp.rate_percent_per_second must be positive when enabled")
     forward_axis = _signed_axis(imu_estimate, "forward_axis", ImuEstimateConfig.forward_axis)
     left_axis = _signed_axis(imu_estimate, "left_axis", ImuEstimateConfig.left_axis)
     up_axis = _signed_axis(imu_estimate, "up_axis", ImuEstimateConfig.up_axis)
@@ -133,6 +170,10 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
                 control.get("default_pwm_percent", ControlConfig.default_pwm_percent)
             ),
             brake_duration_ms=int(control.get("brake_duration_ms", ControlConfig.brake_duration_ms)),
+            wheel_ramp=WheelRampConfig(
+                enabled=wheel_ramp_enabled,
+                rate_percent_per_second=wheel_ramp_rate,
+            ),
         ),
         sensor=SensorConfig(
             angle_offset_deg=float(sensor.get("angle_offset_deg", SensorConfig.angle_offset_deg)),

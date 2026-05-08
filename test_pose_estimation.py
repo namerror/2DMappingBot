@@ -2,9 +2,19 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from pose_estimator import PoseEstimator
-from robot_config import CommandEstimateConfig, ImuEstimateConfig, PoseConfig, load_config
+from robot_config import (
+    CommandEstimateConfig,
+    ControlConfig,
+    ImuEstimateConfig,
+    PoseConfig,
+    SerialConfig,
+    WheelRampConfig,
+    load_config,
+)
+from robot_serial import RobotController
 
 
 @dataclass
@@ -66,6 +76,83 @@ pose:
     up_axis: z
 """
             )
+
+    def test_wheel_ramp_defaults_to_disabled(self) -> None:
+        config = self.load_yaml("")
+
+        self.assertFalse(config.control.wheel_ramp.enabled)
+        self.assertEqual(config.control.wheel_ramp.rate_percent_per_second, 100.0)
+
+    def test_wheel_ramp_is_loaded(self) -> None:
+        config = self.load_yaml(
+            """
+control:
+  wheel_ramp:
+    enabled: true
+    rate_percent_per_second: 75.5
+"""
+        )
+
+        self.assertTrue(config.control.wheel_ramp.enabled)
+        self.assertEqual(config.control.wheel_ramp.rate_percent_per_second, 75.5)
+
+    def test_enabled_wheel_ramp_requires_positive_rate(self) -> None:
+        with self.assertRaises(ValueError):
+            self.load_yaml(
+                """
+control:
+  wheel_ramp:
+    enabled: true
+    rate_percent_per_second: 0
+"""
+            )
+
+
+class FakeSerial:
+    def __init__(self) -> None:
+        self.is_open = True
+        self.in_waiting = 0
+        self.writes: list[str] = []
+
+    def write(self, data: bytes) -> int:
+        self.writes.append(data.decode("utf-8").strip())
+        return len(data)
+
+    def readline(self) -> bytes:
+        return b""
+
+    def close(self) -> None:
+        self.is_open = False
+
+
+class RobotControllerSerialTests(unittest.TestCase):
+    def make_controller(self, control_config: ControlConfig, fake_serial: FakeSerial):
+        with patch("robot_serial.serial.Serial", return_value=fake_serial):
+            return RobotController(SerialConfig(), control_config)
+
+    def test_configure_wheel_ramp_sends_enabled_command(self) -> None:
+        fake_serial = FakeSerial()
+        controller = self.make_controller(
+            ControlConfig(
+                wheel_ramp=WheelRampConfig(
+                    enabled=True,
+                    rate_percent_per_second=100.0,
+                )
+            ),
+            fake_serial,
+        )
+
+        controller.configure_wheel_ramp()
+
+        self.assertEqual(fake_serial.writes, ["W1,100.0"])
+
+    def test_configure_wheel_ramp_sends_disabled_command(self) -> None:
+        fake_serial = FakeSerial()
+        controller = self.make_controller(ControlConfig(), fake_serial)
+
+        controller.configure_wheel_ramp()
+
+        self.assertEqual(fake_serial.writes, ["W0,0"])
 
 
 class PoseEstimatorTests(unittest.TestCase):
