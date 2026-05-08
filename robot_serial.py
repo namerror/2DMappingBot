@@ -92,6 +92,13 @@ class RobotController:
         pwm = max(0, min(100, int(pwm_percent)))
         self._write(f"V{pwm}")
 
+    def configure_wheel_ramp(self) -> None:
+        ramp = self.control_config.wheel_ramp
+        if ramp.enabled:
+            self._write(f"W1,{ramp.rate_percent_per_second}")
+        else:
+            self._write("W0,0")
+
     def brake(self) -> None:
         self._write(f"K{self.control_config.brake_duration_ms}")
 
