@@ -10,12 +10,23 @@ control:
   default_pwm_percent: 30
   brake_duration_ms: 150
 
+sensor:
+  angle_offset_deg: 90.0 # this is the angle offset of the distance sensor relative to the robot forward direction. Positive to the left, negative to the right. Adjust according to your sensor's mounting position.
+
 pose:
-  mode: command_estimate
+  mode: imu_estimate
   command_estimate:
     wheel_diameter_cm: 6.5
     track_width_cm: 12.0
-    motor_rpm_at_100_pwm: 180.0
+    motor_rpm_at_100_pwm: 120.0
     pwm_to_speed_scale: 1.0
   imu_estimate:
-    enabled: false
+    forward_axis: -x
+    left_axis: -y
+    up_axis: z
+    accel_bias_samples: 50
+    accel_deadband_g: 0.03
+    stationary_accel_threshold_g: 0.04
+    stationary_gyro_threshold_dps: 2.0
+    velocity_decay_per_second: 0.15
+    max_dt_seconds: 0.10
