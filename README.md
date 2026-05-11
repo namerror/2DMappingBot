@@ -1,13 +1,10 @@
 # 2D SLAM Robot Prototype
 
 ## Introduction
-<img align="right" src="/assets/robot_front.jpg"/>
 
 This project is a prototype of a low-cost 2D SLAM (Simultaneous Localization and Mapping) robot designed to navigate and map a maze-like environment. The robot is built using affordable components, including an ultrasonic distance sensor for mapping nearby walls and an IMU (Inertial Measurement Unit) for estimating its position and orientation. The collected sensor data is streamed to a laptop, where a live visualization displays a rough 2D map of the maze in real time. This project serves as a proof of concept for using simple robotics and sensing technologies to achieve real-time environmental mapping without relying on expensive sensors or complex algorithms.
 
-<img src="/assets/robot_top.jpg"/> <img src="/assets/robot_in_action.png"/>
-
-![Demo](/assets/demo.gif)
+<img height="270" src="/assets/robot_front.jpg"/> <img height="270" src="/assets/robot_top.jpg"/> <img height="270" src="/assets/robot_in_action.png"/> <img height="270" src="/assets/demo.gif" />
 
 ## Setup Instructions
 
